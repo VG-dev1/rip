@@ -9,8 +9,8 @@
 <p align="center">
   <a href="https://crates.io/crates/rip-cli"><img src="https://img.shields.io/crates/v/rip-cli.svg" alt="Crates.io"></a>
   <a href="https://crates.io/crates/rip-cli"><img src="https://img.shields.io/crates/d/rip-cli.svg" alt="Downloads"></a>
-  <a href="https://github.com/cesarferreira/rip-cli/blob/main/LICENSE"><img src="https://img.shields.io/crates/l/rip-cli.svg" alt="License"></a>
-  <a href="https://github.com/cesarferreira/rip-cli"><img src="https://img.shields.io/github/stars/cesarferreira/rip-cli?style=social" alt="GitHub Stars"></a>
+  <a href="https://github.com/cesarferreira/rip/blob/main/LICENSE"><img src="https://img.shields.io/crates/l/rip-cli.svg" alt="License"></a>
+  <a href="https://github.com/cesarferreira/rip"><img src="https://img.shields.io/github/stars/cesarferreira/rip?style=social" alt="GitHub Stars"></a>
 </p>
 
 ## Installation
