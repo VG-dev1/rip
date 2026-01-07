@@ -4,6 +4,8 @@ use inquire::MultiSelect;
 use nix::sys::signal::{kill, Signal};
 use nix::unistd::Pid;
 use std::fmt;
+use std::thread;
+use std::time::Duration;
 use sysinfo::System;
 
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq)]
@@ -69,12 +71,15 @@ impl fmt::Display for ProcessInfo {
 fn get_processes(filter: Option<&str>, sort_by: SortBy) -> Vec<ProcessInfo> {
     let mut sys = System::new_all();
     sys.refresh_all();
+    // Need two samples to get accurate CPU usage
+    thread::sleep(Duration::from_millis(200));
+    sys.refresh_all();
 
     let mut processes: Vec<ProcessInfo> = sys
         .processes()
         .iter()
-        .filter_map(|(pid, process)| {
-            let name = process.name().to_string_lossy().to_string();
+        .filter_map(|(pid, proc)| {
+            let name = proc.name().to_string_lossy().to_string();
 
             // Apply filter if provided
             if let Some(f) = filter {
@@ -86,8 +91,8 @@ fn get_processes(filter: Option<&str>, sort_by: SortBy) -> Vec<ProcessInfo> {
             Some(ProcessInfo {
                 pid: pid.as_u32(),
                 name,
-                cpu: process.cpu_usage(),
-                memory: process.memory() / 1024 / 1024,
+                cpu: proc.cpu_usage(),
+                memory: proc.memory() / 1024 / 1024,
             })
         })
         .collect();
@@ -126,9 +131,17 @@ fn run_selector(processes: Vec<ProcessInfo>) -> Vec<ProcessInfo> {
         return vec![];
     }
 
-    let ans = MultiSelect::new("Select processes to kill:", processes)
+    let header = format!(
+        "{:<7} {:<35} {:>6} {:>9}",
+        "PID".dimmed(),
+        "NAME".dimmed(),
+        "CPU %".dimmed(),
+        "MEMORY".dimmed()
+    );
+
+    let ans = MultiSelect::new(&format!("{}\n", header), processes)
         .with_page_size(15)
-        .with_vim_mode(true)
+        .with_help_message("↑↓ navigate • Space select • Enter confirm • Type to filter")
         .prompt();
 
     match ans {
