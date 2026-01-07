@@ -1,6 +1,8 @@
-# rip
+<h1 align="center">rip</h1>
 
-> Fuzzy find and kill processes from your terminal
+<p align="center">
+  <i>Fuzzy find and kill processes from your terminal</i>
+</p>
 
 <p align="center">
   <img src="public/screenshot.png" alt="rip demo" width="700">
