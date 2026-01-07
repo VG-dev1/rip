@@ -1,8 +1,9 @@
 use clap::{Parser, ValueEnum};
+use colored::Colorize;
+use inquire::MultiSelect;
 use nix::sys::signal::{kill, Signal};
 use nix::unistd::Pid;
-use skim::prelude::*;
-use std::io::Cursor;
+use std::fmt;
 use sysinfo::System;
 
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq)]
@@ -38,6 +39,7 @@ fn truncate(s: &str, max_len: usize) -> String {
     }
 }
 
+#[derive(Clone)]
 struct ProcessInfo {
     pid: u32,
     name: String,
@@ -45,7 +47,26 @@ struct ProcessInfo {
     memory: u64,
 }
 
-fn get_processes(filter: Option<&str>, sort_by: SortBy) -> Vec<String> {
+impl fmt::Display for ProcessInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let display_name = truncate(&self.name, 35);
+        let pid_str = format!("{:<7}", self.pid).dimmed();
+        let name_str = format!("{:<35}", display_name).white();
+        let cpu_str = format!("{:>5.1}%", self.cpu);
+        let cpu_colored = if self.cpu > 50.0 {
+            cpu_str.red().bold()
+        } else if self.cpu > 10.0 {
+            cpu_str.yellow()
+        } else {
+            cpu_str.dimmed()
+        };
+        let mem_str = format!("{:>6} MB", self.memory).cyan();
+
+        write!(f, "{} {} {} {}", pid_str, name_str, cpu_colored, mem_str)
+    }
+}
+
+fn get_processes(filter: Option<&str>, sort_by: SortBy) -> Vec<ProcessInfo> {
     let mut sys = System::new_all();
     sys.refresh_all();
 
@@ -79,17 +100,7 @@ fn get_processes(filter: Option<&str>, sort_by: SortBy) -> Vec<String> {
         SortBy::Name => processes.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase())),
     }
 
-    // Format for display
     processes
-        .into_iter()
-        .map(|p| {
-            let display_name = truncate(&p.name, 40);
-            format!(
-                "{:<8} {:<40} {:>6.1}% {:>8} MB",
-                p.pid, display_name, p.cpu, p.memory
-            )
-        })
-        .collect()
 }
 
 fn parse_signal(signal_str: &str) -> Result<Signal, String> {
@@ -110,64 +121,38 @@ fn parse_signal(signal_str: &str) -> Result<Signal, String> {
     }
 }
 
-fn run_fuzzy_finder(processes: Vec<String>) -> Vec<String> {
+fn run_selector(processes: Vec<ProcessInfo>) -> Vec<ProcessInfo> {
     if processes.is_empty() {
         return vec![];
     }
 
-    let header = format!(
-        "{:<8} {:<40} {:>7} {:>11}",
-        "PID", "NAME", "CPU", "MEMORY"
-    );
+    let ans = MultiSelect::new("Select processes to kill:", processes)
+        .with_page_size(15)
+        .with_vim_mode(true)
+        .prompt();
 
-    let options = SkimOptionsBuilder::default()
-        .height(Some("50%"))
-        .multi(true)
-        .reverse(true)
-        .header(Some(&header))
-        .prompt(Some("Kill > "))
-        .build()
-        .unwrap();
-
-    let input = processes.join("\n");
-    let item_reader = SkimItemReader::default();
-    let items = item_reader.of_bufread(Cursor::new(input));
-
-    let selected = Skim::run_with(&options, Some(items))
-        .map(|out| {
-            if out.is_abort {
-                vec![]
-            } else {
-                out.selected_items
-                    .iter()
-                    .map(|item| item.output().to_string())
-                    .collect()
-            }
-        })
-        .unwrap_or_default();
-
-    selected
+    match ans {
+        Ok(selected) => selected,
+        Err(_) => vec![],
+    }
 }
 
-fn extract_pid(line: &str) -> Option<i32> {
-    line.split_whitespace()
-        .next()
-        .and_then(|pid_str| pid_str.parse().ok())
-}
-
-fn kill_processes(selected: Vec<String>, signal: Signal) {
-    for line in selected {
-        if let Some(pid) = extract_pid(&line) {
-            let process_name: String = line
-                .split_whitespace()
-                .nth(1)
-                .unwrap_or("unknown")
-                .to_string();
-
-            match kill(Pid::from_raw(pid), signal) {
-                Ok(_) => println!("Killed {} (PID: {})", process_name, pid),
-                Err(e) => eprintln!("Failed to kill {} (PID: {}): {}", process_name, pid, e),
-            }
+fn kill_processes(selected: Vec<ProcessInfo>, signal: Signal) {
+    for proc in selected {
+        match kill(Pid::from_raw(proc.pid as i32), signal) {
+            Ok(_) => println!(
+                "{} {} {}",
+                "Killed".green(),
+                proc.name.bold(),
+                format!("(PID: {})", proc.pid).dimmed()
+            ),
+            Err(e) => eprintln!(
+                "{} {} {}: {}",
+                "Failed".red(),
+                proc.name.bold(),
+                format!("(PID: {})", proc.pid).dimmed(),
+                e
+            ),
         }
     }
 }
@@ -190,7 +175,7 @@ fn main() {
         return;
     }
 
-    let selected = run_fuzzy_finder(processes);
+    let selected = run_selector(processes);
 
     if selected.is_empty() {
         println!("No processes selected");
@@ -239,21 +224,9 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_pid_valid() {
-        let line = "1234     firefox                        10.5%      512 MB";
-        assert_eq!(extract_pid(line), Some(1234));
-    }
-
-    #[test]
-    fn test_extract_pid_different_formats() {
-        assert_eq!(extract_pid("100 bash 0.0% 10 MB"), Some(100));
-        assert_eq!(extract_pid("99999    long-process-name 5.0% 1024 MB"), Some(99999));
-    }
-
-    #[test]
-    fn test_extract_pid_invalid() {
-        assert_eq!(extract_pid(""), None);
-        assert_eq!(extract_pid("not-a-pid process 0% 0 MB"), None);
+    fn test_truncate() {
+        assert_eq!(truncate("short", 10), "short");
+        assert_eq!(truncate("this is a very long string", 10), "this is...");
     }
 
     #[test]
@@ -263,34 +236,30 @@ mod tests {
     }
 
     #[test]
-    fn test_get_processes_format() {
-        let processes = get_processes(None, SortBy::Cpu);
-        let first = processes.first().unwrap();
-
-        // Should have at least 4 whitespace-separated fields
-        let parts: Vec<&str> = first.split_whitespace().collect();
-        assert!(parts.len() >= 4, "Process line should have at least 4 fields");
-
-        // First field should be a valid PID (number)
-        assert!(parts[0].parse::<i32>().is_ok(), "First field should be a valid PID");
-    }
-
-    #[test]
     fn test_get_processes_with_filter() {
-        // This test checks that filtering works - use a common process name
         let all_processes = get_processes(None, SortBy::Cpu);
         let filtered = get_processes(Some("NONEXISTENT_PROCESS_12345"), SortBy::Cpu);
-
-        // Filtered should have fewer (or equal if no matches)
         assert!(filtered.len() <= all_processes.len());
     }
 
     #[test]
     fn test_sort_by_values() {
-        // Test that all sort options work without panicking
         let _ = get_processes(None, SortBy::Cpu);
         let _ = get_processes(None, SortBy::Mem);
         let _ = get_processes(None, SortBy::Pid);
         let _ = get_processes(None, SortBy::Name);
+    }
+
+    #[test]
+    fn test_process_info_display() {
+        let proc = ProcessInfo {
+            pid: 1234,
+            name: "test_process".to_string(),
+            cpu: 25.5,
+            memory: 512,
+        };
+        let display = format!("{}", proc);
+        assert!(display.contains("1234"));
+        assert!(display.contains("test_process"));
     }
 }

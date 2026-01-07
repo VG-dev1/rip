@@ -10,5 +10,6 @@ path = "src/main.rs"
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 sysinfo = "0.32"
-skim = "0.10"
 nix = { version = "0.29", features = ["signal"] }
+colored = "2"
+inquire = "0.7"
