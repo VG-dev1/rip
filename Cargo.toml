@@ -1,6 +1,6 @@
 [package]
 name = "rip-cli"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Fuzzy find and kill processes from your terminal"
 license = "MIT"
