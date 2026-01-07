@@ -4,7 +4,7 @@ version = "0.3.0"
 edition = "2021"
 description = "Fuzzy find and kill processes from your terminal"
 license = "MIT"
-repository = "https://github.com/cesarferreira/rip-cli"
+repository = "https://github.com/cesarferreira/rip"
 keywords = ["cli", "process", "kill", "fuzzy", "terminal"]
 categories = ["command-line-utilities"]
 
