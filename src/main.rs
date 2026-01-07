@@ -1,9 +1,17 @@
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use nix::sys::signal::{kill, Signal};
 use nix::unistd::Pid;
 use skim::prelude::*;
 use std::io::Cursor;
 use sysinfo::System;
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq)]
+enum SortBy {
+    Cpu,
+    Mem,
+    Pid,
+    Name,
+}
 
 #[derive(Parser)]
 #[command(name = "rip")]
@@ -16,13 +24,32 @@ struct Args {
     /// Signal to send (default: SIGKILL)
     #[arg(short, long, default_value = "KILL")]
     signal: String,
+
+    /// Sort processes by field (default: cpu)
+    #[arg(long, value_enum, default_value = "cpu")]
+    sort: SortBy,
 }
 
-fn get_processes(filter: Option<&str>) -> Vec<String> {
+fn truncate(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max_len - 3])
+    }
+}
+
+struct ProcessInfo {
+    pid: u32,
+    name: String,
+    cpu: f32,
+    memory: u64,
+}
+
+fn get_processes(filter: Option<&str>, sort_by: SortBy) -> Vec<String> {
     let mut sys = System::new_all();
     sys.refresh_all();
 
-    let mut processes: Vec<_> = sys
+    let mut processes: Vec<ProcessInfo> = sys
         .processes()
         .iter()
         .filter_map(|(pid, process)| {
@@ -35,19 +62,34 @@ fn get_processes(filter: Option<&str>) -> Vec<String> {
                 }
             }
 
-            let cpu = process.cpu_usage();
-            let memory = process.memory() / 1024 / 1024; // Convert to MB
-
-            Some(format!(
-                "{:<8} {:<30} {:>6.1}% {:>8} MB",
-                pid, name, cpu, memory
-            ))
+            Some(ProcessInfo {
+                pid: pid.as_u32(),
+                name,
+                cpu: process.cpu_usage(),
+                memory: process.memory() / 1024 / 1024,
+            })
         })
         .collect();
 
-    // Sort by PID
-    processes.sort();
+    // Sort by selected field
+    match sort_by {
+        SortBy::Cpu => processes.sort_by(|a, b| b.cpu.partial_cmp(&a.cpu).unwrap()),
+        SortBy::Mem => processes.sort_by(|a, b| b.memory.cmp(&a.memory)),
+        SortBy::Pid => processes.sort_by(|a, b| a.pid.cmp(&b.pid)),
+        SortBy::Name => processes.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase())),
+    }
+
+    // Format for display
     processes
+        .into_iter()
+        .map(|p| {
+            let display_name = truncate(&p.name, 40);
+            format!(
+                "{:<8} {:<40} {:>6.1}% {:>8} MB",
+                p.pid, display_name, p.cpu, p.memory
+            )
+        })
+        .collect()
 }
 
 fn parse_signal(signal_str: &str) -> Result<Signal, String> {
@@ -74,7 +116,7 @@ fn run_fuzzy_finder(processes: Vec<String>) -> Vec<String> {
     }
 
     let header = format!(
-        "{:<8} {:<30} {:>7} {:>11}",
+        "{:<8} {:<40} {:>7} {:>11}",
         "PID", "NAME", "CPU", "MEMORY"
     );
 
@@ -141,7 +183,7 @@ fn main() {
         }
     };
 
-    let processes = get_processes(args.filter.as_deref());
+    let processes = get_processes(args.filter.as_deref(), args.sort);
 
     if processes.is_empty() {
         println!("No processes found");
@@ -216,13 +258,13 @@ mod tests {
 
     #[test]
     fn test_get_processes_returns_non_empty() {
-        let processes = get_processes(None);
+        let processes = get_processes(None, SortBy::Cpu);
         assert!(!processes.is_empty(), "Should return at least one process");
     }
 
     #[test]
     fn test_get_processes_format() {
-        let processes = get_processes(None);
+        let processes = get_processes(None, SortBy::Cpu);
         let first = processes.first().unwrap();
 
         // Should have at least 4 whitespace-separated fields
@@ -236,10 +278,19 @@ mod tests {
     #[test]
     fn test_get_processes_with_filter() {
         // This test checks that filtering works - use a common process name
-        let all_processes = get_processes(None);
-        let filtered = get_processes(Some("NONEXISTENT_PROCESS_12345"));
+        let all_processes = get_processes(None, SortBy::Cpu);
+        let filtered = get_processes(Some("NONEXISTENT_PROCESS_12345"), SortBy::Cpu);
 
         // Filtered should have fewer (or equal if no matches)
         assert!(filtered.len() <= all_processes.len());
+    }
+
+    #[test]
+    fn test_sort_by_values() {
+        // Test that all sort options work without panicking
+        let _ = get_processes(None, SortBy::Cpu);
+        let _ = get_processes(None, SortBy::Mem);
+        let _ = get_processes(None, SortBy::Pid);
+        let _ = get_processes(None, SortBy::Name);
     }
 }

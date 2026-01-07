@@ -23,7 +23,7 @@ cargo install rip-cli
 ## Usage
 
 ```bash
-# Open fuzzy finder with all processes
+# Open fuzzy finder with all processes (sorted by CPU)
 rip
 
 # Pre-filter by process name
@@ -31,7 +31,24 @@ rip -f chrome
 
 # Use a different signal (default: SIGKILL)
 rip -s SIGTERM
+
+# Sort by memory usage
+rip --sort mem
+
+# Sort by PID
+rip --sort pid
+
+# Sort by name
+rip --sort name
 ```
+
+### Options
+
+| Flag | Description |
+|------|-------------|
+| `-f, --filter <name>` | Pre-filter processes by name |
+| `-s, --signal <signal>` | Signal to send (default: KILL) |
+| `--sort <field>` | Sort by: cpu (default), mem, pid, name |
 
 ### Controls
 
