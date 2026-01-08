@@ -17,6 +17,13 @@
 
 ## Installation
 
+### Homebrew (macOS)
+
+```bash
+brew tap cesarferreira/tap
+brew install rip
+```
+
 ### Cargo
 
 ```bash
