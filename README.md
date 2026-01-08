@@ -36,6 +36,42 @@ cargo install rip-cli
 cargo install --path .
 ```
 
+### Nix
+#### Test with nix run:
+```bash
+nix run github:MaySeikatsu/rip
+```
+
+#### Nix - Install via flake
+```nix
+# In your local flake.nix file
+inputs = {
+  rip = {
+    url = github:MaySeikatsu/rip;
+    inputs.nixpkgs.follows = "nixpkgs";
+  };
+};
+
+outputs = {
+# Your output packages + rip
+#  self,
+#  nixpkgs,
+  rip,
+#  ...
+};
+
+# In your configuration.nix
+{  inputs, ...}:{
+# Your other configurations 
+  environment.systemPackages = with pkgs; [
+    # inputs.rip.packages.${$system}.default #<-old
+    inputs.rip.packages.${pkgs.stdenv.hostPlatform.system}.default #<- current
+  ];
+}
+
+
+```
+
 ## Usage
 
 ```bash
