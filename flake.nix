@@ -46,7 +46,7 @@
             # Metadata shown in nix
             meta = with pkgs.lib; {
               description = "Fuzzy find and kill processes from your terminal";
-              homepage = "https://github.com/MaySeikatsu/rip";
+              homepage = "https://github.com/cesarferreira/rip";
               license = licenses.mit;
               maintainers = [ ];
               mainProgram = "rip";
@@ -57,7 +57,7 @@
           rip = self.packages.${system}.default;
         };
 
-        # Execute with `nix run github:MaySeikatsu/rip`
+        # Execute with `nix run github:cesarferreira/rip`
         apps = {
           default = {
             type = "app";

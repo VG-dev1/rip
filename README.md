@@ -39,7 +39,7 @@ cargo install --path .
 ### Nix
 #### Test with nix run:
 ```bash
-nix run github:MaySeikatsu/rip --no-write-lock-file
+nix run github:cesarferreira/rip --no-write-lock-file
 ```
 
 #### Install via flake
@@ -47,7 +47,7 @@ nix run github:MaySeikatsu/rip --no-write-lock-file
 # In your local flake.nix file
 inputs = {
   rip = {
-    url = "github:MaySeikatsu/rip";
+    url = "github:cesarferreira/rip";
     inputs.nixpkgs.follows = "nixpkgs";
   };
 };
