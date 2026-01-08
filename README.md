@@ -36,6 +36,42 @@ cargo install rip-cli
 cargo install --path .
 ```
 
+### Nix
+#### Test with nix run:
+```bash
+nix run github:cesarferreira/rip --no-write-lock-file
+```
+
+#### Install via flake
+```nix
+# In your local flake.nix file
+inputs = {
+  rip = {
+    url = "github:cesarferreira/rip";
+    inputs.nixpkgs.follows = "nixpkgs";
+  };
+};
+
+# Your output packages + rip
+outputs = {
+#  self,
+#  nixpkgs,
+  rip,
+#  ...
+};
+
+# In your configuration.nix
+{  inputs, ...}:{
+# Your other configurations 
+  environment.systemPackages = with pkgs; [
+    # inputs.rip.packages.${$system}.default #<-old
+    inputs.rip.packages.${pkgs.stdenv.hostPlatform.system}.default #<- current
+  ];
+}
+
+
+```
+
 ## Usage
 
 ```bash
