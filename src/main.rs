@@ -7,6 +7,7 @@ use std::fmt;
 use std::thread;
 use std::time::Duration;
 use sysinfo::System;
+use terminal_size::{terminal_size, Width};
 
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq)]
 enum SortBy {
@@ -41,19 +42,32 @@ fn truncate(s: &str, max_len: usize) -> String {
     }
 }
 
+/// Calculate available width for the name column based on terminal size
+fn calculate_name_width() -> usize {
+    let term_width = terminal_size()
+        .map(|(Width(w), _)| w as usize)
+        .unwrap_or(80);
+
+    // Fixed columns: checkbox(6) + PID(7) + CPU(7) + Memory(9) + spaces(4)
+    let fixed = 6 + 7 + 7 + 9 + 4;
+    let available = term_width.saturating_sub(fixed);
+    available.clamp(20, 80)
+}
+
 #[derive(Clone)]
 struct ProcessInfo {
     pid: u32,
     name: String,
     cpu: f32,
     memory: u64,
+    name_width: usize,
 }
 
 impl fmt::Display for ProcessInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let display_name = truncate(&self.name, 35);
+        let display_name = truncate(&self.name, self.name_width);
         let pid_str = format!("{:<7}", self.pid).dimmed();
-        let name_str = format!("{:<35}", display_name).white();
+        let name_str = format!("{:<width$}", display_name, width = self.name_width).white();
         let cpu_str = format!("{:>5.1}%", self.cpu);
         let cpu_colored = if self.cpu > 50.0 {
             cpu_str.red().bold()
@@ -75,6 +89,8 @@ fn get_processes(filter: Option<&str>, sort_by: SortBy) -> Vec<ProcessInfo> {
     thread::sleep(Duration::from_millis(200));
     sys.refresh_all();
 
+    let name_width = calculate_name_width();
+
     let mut processes: Vec<ProcessInfo> = sys
         .processes()
         .iter()
@@ -93,6 +109,7 @@ fn get_processes(filter: Option<&str>, sort_by: SortBy) -> Vec<ProcessInfo> {
                 name,
                 cpu: proc.cpu_usage(),
                 memory: proc.memory() / 1024 / 1024,
+                name_width,
             })
         })
         .collect();
@@ -131,12 +148,15 @@ fn run_selector(processes: Vec<ProcessInfo>) -> Vec<ProcessInfo> {
         return vec![];
     }
 
+    let name_width = calculate_name_width();
+    // 6 spaces to account for inquire checkbox prefix ("> [ ]" or "  [ ]")
     let header = format!(
-        "{:<7} {:<35} {:>6} {:>9}",
+        "      {:<7} {:<width$} {:>6} {:>9}",
         "PID".dimmed(),
         "NAME".dimmed(),
         "CPU %".dimmed(),
-        "MEMORY".dimmed()
+        "MEMORY".dimmed(),
+        width = name_width
     );
 
     let ans = MultiSelect::new(&format!("{}\n", header), processes)
@@ -270,6 +290,7 @@ mod tests {
             name: "test_process".to_string(),
             cpu: 25.5,
             memory: 512,
+            name_width: 35,
         };
         let display = format!("{}", proc);
         assert!(display.contains("1234"));
