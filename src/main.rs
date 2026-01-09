@@ -67,15 +67,21 @@ fn truncate(s: &str, max_len: usize) -> String {
 }
 
 /// Calculate available width for the name column based on terminal size
-fn calculate_name_width() -> usize {
+fn calculate_name_width(ports_mode: bool) -> usize {
     let term_width = terminal_size()
         .map(|(Width(w), _)| w as usize)
         .unwrap_or(80);
 
     // Fixed columns: checkbox(6) + PID(7) + CPU(7) + Memory(9) + spaces(4)
-    let fixed = 6 + 7 + 7 + 9 + 4;
+    let mut fixed = 6 + 7 + 7 + 9 + 4;
+
+    // Add PORT column width in ports mode
+    if ports_mode {
+        fixed += 10; // "PORT " (9) + space
+    }
+
     let available = term_width.saturating_sub(fixed);
-    available.clamp(20, 80)
+    available.clamp(15, 80)
 }
 
 #[derive(Clone)]
@@ -134,7 +140,7 @@ fn get_processes(filter: Option<&str>, sort_by: SortBy) -> Vec<ProcessInfo> {
     thread::sleep(Duration::from_millis(200));
     sys.refresh_all();
 
-    let name_width = calculate_name_width();
+    let name_width = calculate_name_width(false);
 
     let mut processes: Vec<ProcessInfo> = sys
         .processes()
@@ -206,7 +212,7 @@ fn get_processes_with_ports(
     sys.refresh_all();
 
     let port_map = get_port_mappings();
-    let name_width = calculate_name_width();
+    let name_width = calculate_name_width(true);
 
     let mut processes: Vec<ProcessInfo> = sys
         .processes()
@@ -284,7 +290,7 @@ fn run_selector(processes: Vec<ProcessInfo>, ports_mode: bool) -> Vec<ProcessInf
         return vec![];
     }
 
-    let name_width = calculate_name_width();
+    let name_width = calculate_name_width(ports_mode);
     // 4 spaces + "? " from inquire = 6 chars to match checkbox prefix ("> [ ]" or "  [ ]")
     // Format plain strings first, then apply colors
     let pid_h = format!("{:<7}", "PID");
@@ -585,7 +591,7 @@ fn refresh_processes(sys: &mut System, filter: Option<&str>, sort_by: SortBy) ->
     thread::sleep(Duration::from_millis(200));
     sys.refresh_all();
 
-    let name_width = calculate_name_width();
+    let name_width = calculate_name_width(false);
 
     let mut processes: Vec<ProcessInfo> = sys
         .processes()
@@ -626,7 +632,7 @@ fn refresh_processes_with_ports(
     sys.refresh_all();
 
     let port_map = get_port_mappings();
-    let name_width = calculate_name_width();
+    let name_width = calculate_name_width(true);
 
     let mut processes: Vec<ProcessInfo> = sys
         .processes()
