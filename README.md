@@ -92,6 +92,27 @@ rip --sort pid
 
 # Sort by name
 rip --sort name
+
+# Live mode with auto-refreshing process list
+rip --live
+```
+
+### Ports Mode
+
+Show and filter by processes listening on network ports:
+
+```bash
+# Show all processes with open ports
+rip --ports
+
+# Filter to a specific port (e.g., kill whatever is using port 3000)
+rip --port 3000
+
+# Combine with live mode
+rip --ports --live
+
+# Sort by port number
+rip --ports --sort port
 ```
 
 ### Options
@@ -100,7 +121,10 @@ rip --sort name
 |------|-------------|
 | `-f, --filter <name>` | Pre-filter processes by name |
 | `-s, --signal <signal>` | Signal to send (default: KILL) |
-| `--sort <field>` | Sort by: cpu (default), mem, pid, name |
+| `--sort <field>` | Sort by: cpu (default), mem, pid, name, port |
+| `-l, --live` | Live mode with auto-refreshing process list |
+| `--ports` | Show only processes with open ports |
+| `--port <PORT>` | Filter by specific port number (implies --ports) |
 
 ### Controls
 
@@ -132,6 +156,12 @@ rip -s TERM
 
 # Kill node processes
 rip -f node
+
+# Kill whatever is using port 3000
+rip --port 3000
+
+# View all processes with open ports in live mode
+rip --ports --live
 ```
 
 ## License
