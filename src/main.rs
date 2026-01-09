@@ -81,17 +81,24 @@ struct ProcessInfo {
 impl fmt::Display for ProcessInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let display_name = truncate(&self.name, self.name_width);
-        let pid_str = Colorize::dimmed(format!("{:<7}", self.pid).as_str());
-        let name_str = Colorize::white(format!("{:<width$}", display_name, width = self.name_width).as_str());
-        let cpu_str = format!("{:>5.1}%", self.cpu);
+
+        // Format plain strings first with proper widths
+        let pid_formatted = format!("{:<7}", self.pid);
+        let name_formatted = format!("{:<width$}", display_name, width = self.name_width);
+        let cpu_formatted = format!("{:>6.1}%", self.cpu);
+        let mem_formatted = format!("{:>9}", format!("{} MB", self.memory));
+
+        // Then apply colors
+        let pid_str = Colorize::dimmed(pid_formatted.as_str());
+        let name_str = Colorize::white(name_formatted.as_str());
         let cpu_colored = if self.cpu > 50.0 {
-            Colorize::bold(Colorize::red(cpu_str.as_str()))
+            Colorize::bold(Colorize::red(cpu_formatted.as_str()))
         } else if self.cpu > 10.0 {
-            Colorize::yellow(cpu_str.as_str())
+            Colorize::yellow(cpu_formatted.as_str())
         } else {
-            Colorize::dimmed(cpu_str.as_str())
+            Colorize::dimmed(cpu_formatted.as_str())
         };
-        let mem_str = Colorize::cyan(format!("{:>6} MB", self.memory).as_str());
+        let mem_str = Colorize::cyan(mem_formatted.as_str());
 
         write!(f, "{} {} {} {}", pid_str, name_str, cpu_colored, mem_str)
     }
@@ -164,14 +171,18 @@ fn run_selector(processes: Vec<ProcessInfo>) -> Vec<ProcessInfo> {
     }
 
     let name_width = calculate_name_width();
-    // 6 spaces to account for inquire checkbox prefix ("> [ ]" or "  [ ]")
+    // 4 spaces + "? " from inquire = 6 chars to match checkbox prefix ("> [ ]" or "  [ ]")
+    // Format plain strings first, then apply colors
+    let pid_h = format!("{:<7}", "PID");
+    let name_h = format!("{:<width$}", "NAME", width = name_width);
+    let cpu_h = format!("{:>7}", "CPU %");
+    let mem_h = format!("{:>9}", "MEMORY");
     let header = format!(
-        "      {:<7} {:<width$} {:>6} {:>9}",
-        Colorize::dimmed("PID"),
-        Colorize::dimmed("NAME"),
-        Colorize::dimmed("CPU %"),
-        Colorize::dimmed("MEMORY"),
-        width = name_width
+        "    {} {} {} {}",
+        Colorize::dimmed(pid_h.as_str()),
+        Colorize::dimmed(name_h.as_str()),
+        Colorize::dimmed(cpu_h.as_str()),
+        Colorize::dimmed(mem_h.as_str()),
     );
 
     let ans = MultiSelect::new(&format!("{}\n", header), processes)
@@ -235,9 +246,9 @@ fn run_live_mode(filter: Option<&str>, sort_by: SortBy, signal: Signal) -> std::
                         } else {
                             Style::default()
                         }),
-                        Cell::from(format!("{}", p.pid)).style(Style::default().fg(Color::DarkGray)),
+                        Cell::from(format!("{:<7}", p.pid)).style(Style::default().fg(Color::DarkGray)),
                         Cell::from(truncate(&p.name, 40)).style(Style::default().fg(Color::White)),
-                        Cell::from(format!("{:>5.1}%", p.cpu)).style(cpu_style),
+                        Cell::from(format!("{:>6.1}%", p.cpu)).style(cpu_style),
                         Cell::from(format!("{:>6} MB", p.memory)).style(Style::default().fg(Color::Cyan)),
                     ])
                 })
@@ -245,19 +256,19 @@ fn run_live_mode(filter: Option<&str>, sort_by: SortBy, signal: Signal) -> std::
 
             let header = Row::new(vec![
                 Cell::from(" "),
-                Cell::from("PID").style(Style::default().fg(Color::DarkGray)),
+                Cell::from(format!("{:<7}", "PID")).style(Style::default().fg(Color::DarkGray)),
                 Cell::from("NAME").style(Style::default().fg(Color::DarkGray)),
-                Cell::from("CPU %").style(Style::default().fg(Color::DarkGray)),
-                Cell::from("MEMORY").style(Style::default().fg(Color::DarkGray)),
+                Cell::from(format!("{:>7}", "CPU %")).style(Style::default().fg(Color::DarkGray)),
+                Cell::from(format!("{:>9}", "MEMORY")).style(Style::default().fg(Color::DarkGray)),
             ])
             .style(Style::default().bold());
 
             let widths = [
                 Constraint::Length(2),
-                Constraint::Length(8),
+                Constraint::Length(7),
                 Constraint::Min(20),
-                Constraint::Length(8),
-                Constraint::Length(12),
+                Constraint::Length(7),
+                Constraint::Length(9),
             ];
 
             let selected_count = selected_pids.len();
