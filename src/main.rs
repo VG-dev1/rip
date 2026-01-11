@@ -12,7 +12,7 @@ use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState},
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::io::stdout;
 use std::thread;
@@ -26,6 +26,7 @@ enum SortBy {
     Mem,
     Pid,
     Name,
+    Port,
 }
 
 #[derive(Parser)]
@@ -50,6 +51,14 @@ struct Args {
     /// Live mode with auto-refreshing process list
     #[arg(short, long)]
     live: bool,
+
+    /// Show only processes with open ports
+    #[arg(long)]
+    ports: bool,
+
+    /// Filter by specific port number (implies --ports)
+    #[arg(long, value_name = "PORT")]
+    port: Option<u16>,
 }
 
 fn truncate(s: &str, max_len: usize) -> String {
@@ -61,15 +70,21 @@ fn truncate(s: &str, max_len: usize) -> String {
 }
 
 /// Calculate available width for the name column based on terminal size
-fn calculate_name_width() -> usize {
+fn calculate_name_width(ports_mode: bool) -> usize {
     let term_width = terminal_size()
         .map(|(Width(w), _)| w as usize)
         .unwrap_or(80);
 
     // Fixed columns: checkbox(6) + PID(7) + CPU(7) + Memory(9) + spaces(4)
-    let fixed = 6 + 7 + 7 + 9 + 4;
+    let mut fixed = 6 + 7 + 7 + 9 + 4;
+
+    // Add PORT column width in ports mode
+    if ports_mode {
+        fixed += 10; // "PORT " (9) + space
+    }
+
     let available = term_width.saturating_sub(fixed);
-    available.clamp(20, 80)
+    available.clamp(15, 80)
 }
 
 #[derive(Clone)]
@@ -79,6 +94,8 @@ struct ProcessInfo {
     cpu: f32,
     memory: u64,
     name_width: usize,
+    port: Option<u16>,
+    protocol: Option<String>,
 }
 
 impl fmt::Display for ProcessInfo {
@@ -103,7 +120,19 @@ impl fmt::Display for ProcessInfo {
         };
         let mem_str = Colorize::cyan(mem_formatted.as_str());
 
-        write!(f, "{} {} {} {}", pid_str, name_str, cpu_colored, mem_str)
+        // Conditionally show port column
+        if let Some(port) = self.port {
+            let proto = self.protocol.as_deref().unwrap_or("TCP");
+            let port_formatted = format!("{:<5} {:>3}", port, proto);
+            let port_str = Colorize::green(port_formatted.as_str());
+            write!(
+                f,
+                "{} {} {} {} {}",
+                port_str, pid_str, name_str, cpu_colored, mem_str
+            )
+        } else {
+            write!(f, "{} {} {} {}", pid_str, name_str, cpu_colored, mem_str)
+        }
     }
 }
 
@@ -114,7 +143,7 @@ fn get_processes(filter: Option<&str>, sort_by: SortBy) -> Vec<ProcessInfo> {
     thread::sleep(Duration::from_millis(200));
     sys.refresh_all();
 
-    let name_width = calculate_name_width();
+    let name_width = calculate_name_width(false);
 
     let mut processes: Vec<ProcessInfo> = sys
         .processes()
@@ -135,18 +164,109 @@ fn get_processes(filter: Option<&str>, sort_by: SortBy) -> Vec<ProcessInfo> {
                 cpu: proc.cpu_usage(),
                 memory: proc.memory() / 1024 / 1024,
                 name_width,
+                port: None,
+                protocol: None,
             })
         })
         .collect();
 
-    // Sort by selected field
+    sort_processes(&mut processes, sort_by);
+    processes
+}
+
+fn sort_processes(processes: &mut Vec<ProcessInfo>, sort_by: SortBy) {
     match sort_by {
         SortBy::Cpu => processes.sort_by(|a, b| b.cpu.partial_cmp(&a.cpu).unwrap()),
         SortBy::Mem => processes.sort_by(|a, b| b.memory.cmp(&a.memory)),
         SortBy::Pid => processes.sort_by(|a, b| a.pid.cmp(&b.pid)),
         SortBy::Name => processes.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase())),
+        SortBy::Port => processes.sort_by(|a, b| a.port.cmp(&b.port)),
+    }
+}
+
+/// Build a mapping from PID to list of (port, protocol) pairs
+fn get_port_mappings() -> HashMap<u32, Vec<(u16, String)>> {
+    let mut map: HashMap<u32, Vec<(u16, String)>> = HashMap::new();
+
+    if let Ok(listeners) = listeners::get_all() {
+        for listener in listeners {
+            let port = listener.socket.port();
+            let protocol = format!("{:?}", listener.protocol).to_uppercase();
+            let entry = map.entry(listener.process.pid).or_default();
+            // Deduplicate: avoid adding same (port, protocol) twice (IPv4 + IPv6)
+            if !entry.iter().any(|(p, proto)| *p == port && proto == &protocol) {
+                entry.push((port, protocol));
+            }
+        }
     }
 
+    map
+}
+
+/// Get processes filtered to only those with listening ports
+fn get_processes_with_ports(
+    filter: Option<&str>,
+    port_filter: Option<u16>,
+    sort_by: SortBy,
+) -> Vec<ProcessInfo> {
+    let mut sys = System::new_all();
+    sys.refresh_all();
+    thread::sleep(Duration::from_millis(200));
+    sys.refresh_all();
+
+    let port_map = get_port_mappings();
+    let name_width = calculate_name_width(true);
+
+    let mut processes: Vec<ProcessInfo> = sys
+        .processes()
+        .iter()
+        .flat_map(|(pid, proc)| {
+            let pid_u32 = pid.as_u32();
+
+            // Only include processes that have listening ports
+            let ports = match port_map.get(&pid_u32) {
+                Some(p) => p,
+                None => return vec![],
+            };
+
+            let name = proc.name().to_string_lossy().to_string();
+
+            // Apply name filter if provided
+            if let Some(f) = filter {
+                if !name.to_lowercase().contains(&f.to_lowercase()) {
+                    return vec![];
+                }
+            }
+
+            let cpu = proc.cpu_usage();
+            let memory = proc.memory() / 1024 / 1024;
+
+            // Create one entry per port
+            ports
+                .iter()
+                .filter_map(|(port, protocol)| {
+                    // If port filter specified, check if this matches
+                    if let Some(target_port) = port_filter {
+                        if *port != target_port {
+                            return None;
+                        }
+                    }
+
+                    Some(ProcessInfo {
+                        pid: pid_u32,
+                        name: name.clone(),
+                        cpu,
+                        memory,
+                        name_width,
+                        port: Some(*port),
+                        protocol: Some(protocol.clone()),
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+
+    sort_processes(&mut processes, sort_by);
     processes
 }
 
@@ -168,25 +288,38 @@ fn parse_signal(signal_str: &str) -> Result<Signal, String> {
     }
 }
 
-fn run_selector(processes: Vec<ProcessInfo>) -> Vec<ProcessInfo> {
+fn run_selector(processes: Vec<ProcessInfo>, ports_mode: bool) -> Vec<ProcessInfo> {
     if processes.is_empty() {
         return vec![];
     }
 
-    let name_width = calculate_name_width();
+    let name_width = calculate_name_width(ports_mode);
     // 4 spaces + "? " from inquire = 6 chars to match checkbox prefix ("> [ ]" or "  [ ]")
     // Format plain strings first, then apply colors
     let pid_h = format!("{:<7}", "PID");
     let name_h = format!("{:<width$}", "NAME", width = name_width);
     let cpu_h = format!("{:>7}", "CPU %");
     let mem_h = format!("{:>9}", "MEMORY");
-    let header = format!(
-        "    {} {} {} {}",
-        Colorize::dimmed(pid_h.as_str()),
-        Colorize::dimmed(name_h.as_str()),
-        Colorize::dimmed(cpu_h.as_str()),
-        Colorize::dimmed(mem_h.as_str()),
-    );
+
+    let header = if ports_mode {
+        let port_h = format!("{:<9}", "PORT");
+        format!(
+            "    {} {} {} {} {}",
+            Colorize::dimmed(port_h.as_str()),
+            Colorize::dimmed(pid_h.as_str()),
+            Colorize::dimmed(name_h.as_str()),
+            Colorize::dimmed(cpu_h.as_str()),
+            Colorize::dimmed(mem_h.as_str()),
+        )
+    } else {
+        format!(
+            "    {} {} {} {}",
+            Colorize::dimmed(pid_h.as_str()),
+            Colorize::dimmed(name_h.as_str()),
+            Colorize::dimmed(cpu_h.as_str()),
+            Colorize::dimmed(mem_h.as_str()),
+        )
+    };
 
     let ans = MultiSelect::new(&format!("{}\n", header), processes)
         .with_page_size(15)
@@ -199,7 +332,13 @@ fn run_selector(processes: Vec<ProcessInfo>) -> Vec<ProcessInfo> {
     }
 }
 
-fn run_live_mode(filter: Option<&str>, sort_by: SortBy, signal: Signal) -> std::io::Result<()> {
+fn run_live_mode(
+    filter: Option<&str>,
+    sort_by: SortBy,
+    signal: Signal,
+    ports_mode: bool,
+    port_filter: Option<u16>,
+) -> std::io::Result<()> {
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
@@ -210,13 +349,21 @@ fn run_live_mode(filter: Option<&str>, sort_by: SortBy, signal: Signal) -> std::
     let mut last_refresh = Instant::now();
     let refresh_interval = Duration::from_secs(2);
     let mut sys = System::new_all();
-    let mut processes = refresh_processes(&mut sys, filter, sort_by);
+    let mut processes = if ports_mode {
+        refresh_processes_with_ports(&mut sys, filter, port_filter, sort_by)
+    } else {
+        refresh_processes(&mut sys, filter, sort_by)
+    };
     let mut show_confirm = false;
 
     loop {
         // Auto-refresh
         if last_refresh.elapsed() >= refresh_interval && !show_confirm {
-            processes = refresh_processes(&mut sys, filter, sort_by);
+            processes = if ports_mode {
+                refresh_processes_with_ports(&mut sys, filter, port_filter, sort_by)
+            } else {
+                refresh_processes(&mut sys, filter, sort_by)
+            };
             last_refresh = Instant::now();
             // Ensure selection is valid
             if let Some(selected) = table_state.selected() {
@@ -243,36 +390,86 @@ fn run_live_mode(filter: Option<&str>, sort_by: SortBy, signal: Signal) -> std::
                         Style::default().fg(Color::DarkGray)
                     };
 
-                    Row::new(vec![
+                    let mut cells = vec![
                         Cell::from(marker).style(if is_selected {
                             Style::default().fg(Color::Green).bold()
                         } else {
                             Style::default()
                         }),
-                        Cell::from(format!("{:<7}", p.pid)).style(Style::default().fg(Color::DarkGray)),
+                    ];
+
+                    // Add PORT column if in ports mode
+                    if ports_mode {
+                        let port_str = p
+                            .port
+                            .map(|port| format!("{:<5}", port))
+                            .unwrap_or_default();
+                        let proto_str = p.protocol.as_deref().unwrap_or("");
+                        cells.push(
+                            Cell::from(format!("{} {:>3}", port_str, proto_str))
+                                .style(Style::default().fg(Color::Green)),
+                        );
+                    }
+
+                    cells.extend([
+                        Cell::from(format!("{:<7}", p.pid))
+                            .style(Style::default().fg(Color::DarkGray)),
                         Cell::from(truncate(&p.name, 40)).style(Style::default().fg(Color::White)),
                         Cell::from(format!("{:>6.1}%", p.cpu)).style(cpu_style),
-                        Cell::from(format!("{:>6} MB", p.memory)).style(Style::default().fg(Color::Cyan)),
-                    ])
+                        Cell::from(format!("{:>6} MB", p.memory))
+                            .style(Style::default().fg(Color::Cyan)),
+                    ]);
+
+                    Row::new(cells)
                 })
                 .collect();
 
-            let header = Row::new(vec![
-                Cell::from(" "),
-                Cell::from(format!("{:<7}", "PID")).style(Style::default().fg(Color::DarkGray)),
-                Cell::from("NAME").style(Style::default().fg(Color::DarkGray)),
-                Cell::from(format!("{:>7}", "CPU %")).style(Style::default().fg(Color::DarkGray)),
-                Cell::from(format!("{:>9}", "MEMORY")).style(Style::default().fg(Color::DarkGray)),
-            ])
-            .style(Style::default().bold());
-
-            let widths = [
-                Constraint::Length(2),
-                Constraint::Length(7),
-                Constraint::Min(20),
-                Constraint::Length(7),
-                Constraint::Length(9),
-            ];
+            let (header, widths): (Row, Vec<Constraint>) = if ports_mode {
+                (
+                    Row::new(vec![
+                        Cell::from(" "),
+                        Cell::from(format!("{:<9}", "PORT"))
+                            .style(Style::default().fg(Color::DarkGray)),
+                        Cell::from(format!("{:<7}", "PID"))
+                            .style(Style::default().fg(Color::DarkGray)),
+                        Cell::from("NAME").style(Style::default().fg(Color::DarkGray)),
+                        Cell::from(format!("{:>7}", "CPU %"))
+                            .style(Style::default().fg(Color::DarkGray)),
+                        Cell::from(format!("{:>9}", "MEMORY"))
+                            .style(Style::default().fg(Color::DarkGray)),
+                    ])
+                    .style(Style::default().bold()),
+                    vec![
+                        Constraint::Length(2),
+                        Constraint::Length(9), // PORT column
+                        Constraint::Length(7),
+                        Constraint::Min(20),
+                        Constraint::Length(7),
+                        Constraint::Length(9),
+                    ],
+                )
+            } else {
+                (
+                    Row::new(vec![
+                        Cell::from(" "),
+                        Cell::from(format!("{:<7}", "PID"))
+                            .style(Style::default().fg(Color::DarkGray)),
+                        Cell::from("NAME").style(Style::default().fg(Color::DarkGray)),
+                        Cell::from(format!("{:>7}", "CPU %"))
+                            .style(Style::default().fg(Color::DarkGray)),
+                        Cell::from(format!("{:>9}", "MEMORY"))
+                            .style(Style::default().fg(Color::DarkGray)),
+                    ])
+                    .style(Style::default().bold()),
+                    vec![
+                        Constraint::Length(2),
+                        Constraint::Length(7),
+                        Constraint::Min(20),
+                        Constraint::Length(7),
+                        Constraint::Length(9),
+                    ],
+                )
+            };
 
             let selected_count = selected_pids.len();
             let title = if selected_count > 0 {
@@ -397,7 +594,7 @@ fn refresh_processes(sys: &mut System, filter: Option<&str>, sort_by: SortBy) ->
     thread::sleep(Duration::from_millis(200));
     sys.refresh_all();
 
-    let name_width = calculate_name_width();
+    let name_width = calculate_name_width(false);
 
     let mut processes: Vec<ProcessInfo> = sys
         .processes()
@@ -417,17 +614,79 @@ fn refresh_processes(sys: &mut System, filter: Option<&str>, sort_by: SortBy) ->
                 cpu: proc.cpu_usage(),
                 memory: proc.memory() / 1024 / 1024,
                 name_width,
+                port: None,
+                protocol: None,
             })
         })
         .collect();
 
-    match sort_by {
-        SortBy::Cpu => processes.sort_by(|a, b| b.cpu.partial_cmp(&a.cpu).unwrap()),
-        SortBy::Mem => processes.sort_by(|a, b| b.memory.cmp(&a.memory)),
-        SortBy::Pid => processes.sort_by(|a, b| a.pid.cmp(&b.pid)),
-        SortBy::Name => processes.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase())),
-    }
+    sort_processes(&mut processes, sort_by);
+    processes
+}
 
+fn refresh_processes_with_ports(
+    sys: &mut System,
+    filter: Option<&str>,
+    port_filter: Option<u16>,
+    sort_by: SortBy,
+) -> Vec<ProcessInfo> {
+    sys.refresh_all();
+    thread::sleep(Duration::from_millis(200));
+    sys.refresh_all();
+
+    let port_map = get_port_mappings();
+    let name_width = calculate_name_width(true);
+
+    let mut processes: Vec<ProcessInfo> = sys
+        .processes()
+        .iter()
+        .flat_map(|(pid, proc)| {
+            let pid_u32 = pid.as_u32();
+
+            // Only include processes that have listening ports
+            let ports = match port_map.get(&pid_u32) {
+                Some(p) => p,
+                None => return vec![],
+            };
+
+            let name = proc.name().to_string_lossy().to_string();
+
+            // Apply name filter if provided
+            if let Some(f) = filter {
+                if !name.to_lowercase().contains(&f.to_lowercase()) {
+                    return vec![];
+                }
+            }
+
+            let cpu = proc.cpu_usage();
+            let memory = proc.memory() / 1024 / 1024;
+
+            // Create one entry per port
+            ports
+                .iter()
+                .filter_map(|(port, protocol)| {
+                    // If port filter specified, check if this matches
+                    if let Some(target_port) = port_filter {
+                        if *port != target_port {
+                            return None;
+                        }
+                    }
+
+                    Some(ProcessInfo {
+                        pid: pid_u32,
+                        name: name.clone(),
+                        cpu,
+                        memory,
+                        name_width,
+                        port: Some(*port),
+                        protocol: Some(protocol.clone()),
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+
+    sort_processes(&mut processes, sort_by);
     processes
 }
 
@@ -478,22 +737,40 @@ fn main() {
         }
     };
 
+    // Determine ports mode
+    let ports_mode = args.ports || args.port.is_some();
+    let port_filter = args.port;
+
     if args.live {
-        if let Err(e) = run_live_mode(args.filter.as_deref(), args.sort, signal) {
+        if let Err(e) = run_live_mode(
+            args.filter.as_deref(),
+            args.sort,
+            signal,
+            ports_mode,
+            port_filter,
+        ) {
             eprintln!("Error: {}", e);
             std::process::exit(1);
         }
         return;
     }
 
-    let processes = get_processes(args.filter.as_deref(), args.sort);
+    let processes = if ports_mode {
+        get_processes_with_ports(args.filter.as_deref(), port_filter, args.sort)
+    } else {
+        get_processes(args.filter.as_deref(), args.sort)
+    };
 
     if processes.is_empty() {
-        println!("No processes found");
+        if ports_mode {
+            println!("No processes with listening ports found");
+        } else {
+            println!("No processes found");
+        }
         return;
     }
 
-    let selected = run_selector(processes);
+    let selected = run_selector(processes, ports_mode);
 
     if selected.is_empty() {
         println!("No processes selected");
@@ -566,6 +843,7 @@ mod tests {
         let _ = get_processes(None, SortBy::Mem);
         let _ = get_processes(None, SortBy::Pid);
         let _ = get_processes(None, SortBy::Name);
+        let _ = get_processes(None, SortBy::Port);
     }
 
     #[test]
@@ -576,9 +854,34 @@ mod tests {
             cpu: 25.5,
             memory: 512,
             name_width: 35,
+            port: None,
+            protocol: None,
         };
         let display = format!("{}", proc);
         assert!(display.contains("1234"));
         assert!(display.contains("test_process"));
+    }
+
+    #[test]
+    fn test_process_info_display_with_port() {
+        let proc = ProcessInfo {
+            pid: 1234,
+            name: "test_server".to_string(),
+            cpu: 5.0,
+            memory: 256,
+            name_width: 35,
+            port: Some(8080),
+            protocol: Some("TCP".to_string()),
+        };
+        let display = format!("{}", proc);
+        assert!(display.contains("8080"));
+        assert!(display.contains("1234"));
+        assert!(display.contains("test_server"));
+    }
+
+    #[test]
+    fn test_get_port_mappings() {
+        // Just verify it doesn't panic; actual ports depend on system state
+        let _mappings = get_port_mappings();
     }
 }
