@@ -29,9 +29,12 @@ enum SortBy {
 }
 
 #[derive(Parser)]
-#[command(name = "rip")]
-#[command(about = "Fuzzy find and kill processes", long_about = None)]
+#[command(name = "rip", version, about = "Fuzzy find and kill processes", disable_version_flag = true)]
 struct Args {
+    /// Print version
+    #[arg(short = 'v', long = "version", action = clap::ArgAction::Version)]
+    _version: (),
+
     /// Pre-filter processes by name
     #[arg(short, long)]
     filter: Option<String>,
