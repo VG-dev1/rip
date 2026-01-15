@@ -20,8 +20,7 @@
 ### Homebrew (macOS)
 
 ```bash
-brew tap cesarferreira/tap
-brew install rip
+brew install cesarferreira/tap/rip
 ```
 
 ### Cargo
