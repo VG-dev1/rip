@@ -59,6 +59,10 @@ struct Args {
     /// Filter by specific port number (implies --ports)
     #[arg(long, value_name = "PORT")]
     port: Option<u16>,
+
+    /// Nuke all matching processes with pre-confirmation to the filter (-f) or the port (--port)
+    #[arg(long = "confirm-nuke")]
+    confirm_nuke: bool,
 }
 
 fn truncate(s: &str, max_len: usize) -> String {
@@ -726,8 +730,20 @@ fn kill_processes(selected: Vec<ProcessInfo>, signal: Signal) {
     }
 }
 
+fn validate_args(args: &Args) -> Result<(), String> {
+    if args.confirm_nuke && args.filter.is_none() && args.port.is_none() {
+        return Err("Error: Process --confirm-nuke requires a filter (-f, --filter) or a port (--port) to prevent accidental mass deletion.".to_string());
+    }
+    Ok(())
+}
+
 fn main() {
     let args = Args::parse();
+
+    if let Err(e) = validate_args(&args) {
+        eprintln!("{}", Colorize::red(e.as_str()));
+        std::process::exit(1);
+    }
 
     let signal = match parse_signal(&args.signal) {
         Ok(s) => s,
@@ -770,7 +786,11 @@ fn main() {
         return;
     }
 
-    let selected = run_selector(processes, ports_mode);
+    let selected = if args.confirm_nuke {
+        processes
+    } else {
+        run_selector(processes, ports_mode)
+    };
 
     if selected.is_empty() {
         println!("No processes selected");
@@ -883,5 +903,65 @@ mod tests {
     fn test_get_port_mappings() {
         // Just verify it doesn't panic; actual ports depend on system state
         let _mappings = get_port_mappings();
+    }
+
+    #[test]
+    fn test_validate_args_valid() {
+        // Valid case: confirm_nuke=true and filter is set
+        let args = Args {
+            _version: (),
+            filter: Some("process".to_string()),
+            signal: "KILL".to_string(),
+            sort: SortBy::Cpu,
+            live: false,
+            ports: false,
+            port: None,
+            confirm_nuke: true,
+        };
+        assert!(validate_args(&args).is_ok());
+
+        // Valid case: confirm_nuke=true and port is set
+        let args = Args {
+            _version: (),
+            filter: None,
+            signal: "KILL".to_string(),
+            sort: SortBy::Cpu,
+            live: false,
+            ports: false,
+            port: Some(8080),
+            confirm_nuke: true,
+        };
+        assert!(validate_args(&args).is_ok());
+
+        // Valid case: confirm_nuke=false (filter not required)
+        let args = Args {
+            _version: (),
+            filter: None,
+            signal: "KILL".to_string(),
+            sort: SortBy::Cpu,
+            live: false,
+            ports: false,
+            port: None,
+            confirm_nuke: false,
+        };
+        assert!(validate_args(&args).is_ok());
+    }
+
+    #[test]
+    fn test_validate_args_invalid() {
+        // Invalid case: confirm_nuke=true and no filter/port
+        let args = Args {
+            _version: (),
+            filter: None,
+            signal: "KILL".to_string(),
+            sort: SortBy::Cpu,
+            live: false,
+            ports: false,
+            port: None,
+            confirm_nuke: true,
+        };
+        let result = validate_args(&args);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Process --confirm-nuke requires a filter"));
     }
 }
